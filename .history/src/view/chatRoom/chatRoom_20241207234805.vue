@@ -1,6 +1,5 @@
 <template>
-  
-  <el-container class="chat-room-container" style="height: 100%; border: 1px solid #dcdcdc;">
+  <el-container style="height: 100%; border: 1px solid #dcdcdc;">
     <!-- 左侧客户列表 -->
     <el-aside width="200px" style="border-right: 1px solid #ebebeb;">
       <div class="customer-list">
@@ -77,10 +76,8 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed ,onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Client } from '@stomp/stompjs';
-
 
 // TODO: 后续会在这里与后端建立 WebSocket 连接
 // 示例：const socket = new WebSocket('ws://example.com/chat');
@@ -109,8 +106,8 @@ const currentCustomer = computed(() => {
   return customers.value.find(c => c.id === selectedCustomerId.value) || null
 })
 
-// // 模拟消息列表
-// // 这里的 fromCustomer 表示消息是否来自客户（true）还是客服（false）
+// 模拟消息列表
+// 这里的 fromCustomer 表示消息是否来自客户（true）还是客服（false）
 const messages = ref([
   { content: '你好，我想咨询一下商品的价格。', fromCustomer: true },
   { content: '好的，请问您想咨询哪款商品？', fromCustomer: false }
@@ -143,65 +140,9 @@ function sendMessage() {
   
   newMessage.value = ''
 }
-
-
-
-// TODO: 在onMounted中与WebSocket建立连接
-onMounted(() => {
-  // 创建 STOMP 客户端实例
-  const stompClient = new Client({
-    brokerURL: 'ws://localhost:8080/ws', 
-    // 这里的URL是Stomp endpoint, /ws是后端定义的端点，加上 /websocket 是SockJS fallback后的实际端点之一
-    // 如果你在后端启用了SockJS，那么URL可能需要适配，通常StompJS会自动处理。
-    // 如有问题，可在后端将 withSockJS() 去掉，直接使用 ws://localhost:8080/ws
-    // 那么这里就直接 ws://localhost:8080/ws 就行。
-
-    onConnect: () => {
-      console.log('Connected to WebSocket');
-      // 订阅服务器推送的消息
-      stompClient.subscribe('/topic/chat', (message) => {
-        const payload = JSON.parse(message.body);
-        messages.value.push({
-          content: payload.content,
-          fromCustomer: payload.from === 'customer' // 简单示例，从属性判断
-        });
-      });
-    },
-    onStompError: (frame) => {
-      console.error('Broker reported error: ' + frame.headers['message']);
-      console.error('Additional details: ' + frame.body);
-    },
-    onWebSocketClose: () => {
-      console.log('WebSocket connection closed');
-    }
-  });
-
-  stompClient.activate();
-
-  // 可以保存在全局或者组件变量中，以便发送消息时使用
-  // 在此仅演示流程，可根据实际情况进行抽取
-});
-
-// 发送消息示例函数
-function sendMessageToServer() {
-  // 假设 stompClient 是我们在 onMounted 中创建的客户端，需要存在组件全局变量中以便使用
-  // 这里示范，实际代码中请将 stompClient 抽取到组件级的变量中
-  // messages.value.push({ content: '客服消息...', fromCustomer: false });
-
-  // TODO: 使用 stompClient.send('/app/sendMessage', {}, JSON.stringify({from:'support', content:'你想咨询哪款商品？'}))
-  // 这样就能将消息发送给后端，再由后端广播给所有订阅者。
-}
-
-
 </script>
 
 <style scoped>
-.chat-room-container {
-  height: 80vh;
-  width: 80vw;
-}
-
-
 .customer-list {
   height: 100%;
   display: flex;

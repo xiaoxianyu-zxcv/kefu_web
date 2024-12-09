@@ -150,7 +150,7 @@ function sendMessage() {
 onMounted(() => {
   // 创建 STOMP 客户端实例
   const stompClient = new Client({
-    brokerURL: 'ws://localhost:8080/ws', 
+    brokerURL: 'ws://localhost:8080/ws/websocket', 
     // 这里的URL是Stomp endpoint, /ws是后端定义的端点，加上 /websocket 是SockJS fallback后的实际端点之一
     // 如果你在后端启用了SockJS，那么URL可能需要适配，通常StompJS会自动处理。
     // 如有问题，可在后端将 withSockJS() 去掉，直接使用 ws://localhost:8080/ws
