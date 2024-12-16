@@ -45,7 +45,7 @@
                   {{ msg.content }}
                 </template>
                 <template v-else-if="msg.messageType === 'image'">
-                  <img :src="msg.content" alt="image message" style="max-width:200px;"/>
+                  <el-image :src="msg.content" style="max-width:200px;" fit="contain"/>
                 </template>
                 <template v-else-if="msg.messageType === 'file'">
                   <a :href="msg.content" target="_blank">下载文件</a>
@@ -65,7 +65,18 @@
           style="flex:1; margin-right:10px;"
         />
         <el-button type="primary" @click="sendMessage">发送</el-button>
-        <el-button @click="sendMockImage">发送测试图片</el-button>
+        <el-upload
+            class="upload-demo"
+            action="http://localhost:8080/api/upload"
+            :headers="headers"
+            :on-success="handleUploadSuccess"
+            :on-error="handleUploadError"
+            :http-request="customRequest"
+            :show-file-list="false"
+        >
+          <el-button type="primary">选择文件</el-button>
+        </el-upload>
+
 
       </el-footer>
     </el-container>
@@ -121,45 +132,6 @@ const currentCustomer = computed(() => {
 
 // 新消息输入框
 const newMessage = ref('')
-
-// 选择客户
-// async function handleSelectCustomer(customerId: string) {
-//   selectedCustomerId.value = customerId;
-//   // 从后端拉取该用户的历史消息
-//   const { data } = await axios.get(`http://localhost:8080/api/messages?userId=${customerId}`);
-//   // data 应该是数组格式的消息列表
-//   console.log('data', data)
-//   messages.value = data.map((msg: any) => {
-//     return {
-//       content: msg.content,
-//       fromCustomer: msg.role === 'user' // 根据消息角色判断消息显示样式
-//     }
-//   });
-// }
-
-// 添加一个标记来控制定时器
-const simulationTimer = ref<number | null>(null)
-
-// 模拟用户发送消息
-function simulateUserMessage() {
-  if (!currentCustomer.value) return
-
-  const simulatedMessage = {
-    fromUser: currentCustomer.value.id,
-    toUser: 'kefu1',
-    role: 'user',
-    content: `我是${currentCustomer.value.name}，这是一条模拟消息 - ${new Date().toLocaleTimeString()}`,
-    timestamp: Date.now()
-  }
-
-  if (stompClient && stompClient.connected) {
-    stompClient.publish({
-      destination: '/app/userSend',
-      body: JSON.stringify(simulatedMessage)
-    })
-  }
-}
-
 
 
 
@@ -220,7 +192,7 @@ function sendMessage() {
     ElMessage.warning('请先选择客户！')
     return
   }
-  
+
   // 将消息加入本地列表，模拟客服发送消息
   messages.value.push({
     content: newMessage.value,
@@ -257,16 +229,7 @@ onMounted(() => {
       //   });
       // });
 
-      //方便以后客服订阅某个客户
-      stompClient?.subscribe(`/topic/kefu/${userId}`, (message) => {
-        const payload = JSON.parse(message.body);
-        console.log('收到消息', payload);
-        messages.value.push({
-          content: payload.content,
-          fromCustomer: payload.role === 'user'
-        });
-      });
-
+      console.log('STOMP connected: ', frame);
 
     },
     onStompError: (frame) => {
@@ -297,22 +260,57 @@ function sendMessageToServer(content: string, userId: string) {
   }
 }
 
-// 在组件卸载时清理定时器
-onUnmounted(() => {
-  if (simulationTimer.value) {
-    clearInterval(simulationTimer.value)
+
+
+
+
+// 如果需要鉴权，这里可以在 headers 中加入token
+const headers = {
+  'Accept': 'application/json'
+};
+
+// 自定义上传请求，以便使用axios，而不是el-upload默认的XMLHttpRequest
+async function customRequest(req: any) {
+  const formData = new FormData();
+  formData.append('file', req.file);
+
+  try {
+    const { data } = await axios.post('http://localhost:8080/api/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    if (data.error) {
+      req.onError(data.error);
+    } else {
+      req.onSuccess(data);
+    }
+  } catch (error) {
+    req.onError(error);
   }
-})
-
-
-async function sendMockImage() {
-  const { data } = await axios.get('http://localhost:8080/api/mockUpload');
-  const fileUrl = data.url;
-  console.log('mock image url:', fileUrl);
-  // 通过 sendMessageToServerWithType 发送消息
-  sendMessageToServerWithType(fileUrl, 'image');
 }
 
+function handleUploadSuccess(response: any, file: any, fileList: any) {
+
+  console.log('上传响应:', response);
+  // 上传成功后response返回 {url: 'xxx'} 其中xxx为文件访问URL
+  const fileUrl = response.url;
+  if (fileUrl) {
+    // 判定文件类型是图片还是其他文件，这里简单用mime type推断
+    const isImage = file.raw && file.raw.type && file.raw.type.startsWith('image/');
+    const messageType = isImage ? 'image' : 'file';
+
+    console.log('类型是：', messageType);
+    // 调用已有的发送消息函数，将fileUrl通过WebSocket发送出去
+    sendMessageToServerWithType(fileUrl, messageType);
+  }
+}
+
+function handleUploadError(err: any, file: any, fileList: any) {
+  console.error('上传失败', err);
+}
+
+// 通过WebSocket发送消息，增加消息类型
 function sendMessageToServerWithType(content: string, messageType: string) {
   if (stompClient && stompClient.connected && currentCustomer.value) {
     const message = {
@@ -323,12 +321,8 @@ function sendMessageToServerWithType(content: string, messageType: string) {
       timestamp: Date.now(),
       messageType: messageType
     };
+    console.log('发送的message是' , message);
     stompClient.publish({ destination: '/app/kefuSend', body: JSON.stringify(message) });
-    messages.value.push({
-      content: message.content,
-      fromCustomer: false,
-      messageType: messageType
-    })
   } else {
     console.warn('Not connected or no customer selected');
   }
