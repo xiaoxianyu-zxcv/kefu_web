@@ -1,22 +1,7 @@
-
 <template>
-  
-  <div id="app" class="app-container">
-    <router-view />
+  <div style="display: flex; height: 100vh; width: 100vw;">
+    <router-view style="flex: 1; height: 100%; width: 100%;"/>
   </div>
-  
 </template>
 <script setup>
 </script>
-<style>
-/* 移除 scoped，让样式全局生效 */
-
-
-#app {
-  height: 100%;
-}
-
-
-
-
-</style>

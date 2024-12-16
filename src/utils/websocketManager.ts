@@ -1,5 +1,3 @@
-// src/utils/websocketManager.ts
-
 import type { WebSocketMessage, MessageType } from '../view/types/websocketTypes';
 
 export class WebSocketManager {
