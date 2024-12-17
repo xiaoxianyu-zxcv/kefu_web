@@ -1,4 +1,3 @@
-// // websocketManager.ts
 
 // export class WebSocketManager {
 //     private ws: WebSocket | null = null;          // WebSocket实例
@@ -116,7 +115,6 @@
 //     }
 //   }
 
-// src/utils/websocketManager.ts
 
 import type { WebSocketMessage, MessageType } from './websocketTypes';
 

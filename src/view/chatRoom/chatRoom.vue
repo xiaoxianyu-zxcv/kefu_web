@@ -1,94 +1,129 @@
 <template>
-
   <el-container class="chat-room-container" style="height: 100%; border: 1px solid #dcdcdc;">
-    <!-- 左侧客户列表 -->
     <el-aside width="200px" style="border-right: 1px solid #ebebeb;">
       <div class="customer-list">
         <el-input
-          v-model="searchKeyword"
-          placeholder="搜索客户"
-          clearable
+            v-model="searchKeyword"
+            placeholder="搜索客户"
+            clearable
+            @input="handleSearchInput"
         />
         <el-scrollbar style="height: calc(100% - 50px);">
           <el-menu
-            :default-active="selectedCustomerId"
-            @select="handleSelectCustomer"
-            style="border:none;"
+              :default-active="selectedCustomerId"
+              @select="handleSelectCustomer"
+              style="border:none;"
           >
             <el-menu-item
-              v-for="customer in filteredCustomers"
-              :key="customer.id"
-              :index="customer.id"
+                v-for="customer in filteredCustomers"
+                :key="customer.id"
+                :index="customer.id"
             >
-              {{ customer.name }}
+              <el-badge :is-dot="hasUnreadMessage(customer.id)">
+                {{ customer.name }}
+              </el-badge>
             </el-menu-item>
           </el-menu>
         </el-scrollbar>
       </div>
     </el-aside>
 
-    <!-- 中间消息框 -->
     <el-container>
-      <el-header style="border-bottom:1px solid #ebebeb;">
+      <el-header>
         <div class="chat-header">
-          <span v-if="currentCustomer">{{ currentCustomer.name }} 的对话</span>
-          <span v-else>请选择客户</span>
-        </div>
-      </el-header>
-      <el-main style="padding:0; position:relative;">
-        <div class="messages-container" style="padding:10px; height:calc(100% - 60px); overflow:auto;">
-          <div v-for="(msg, index) in messages" :key="index" class="message-item" :class="{'from-customer': msg.fromCustomer}">
-            <div class="message-content">
-              <div class="message-sender">{{ msg.fromCustomer ? currentCustomer?.name : '客服' }}：</div>
-              <div class="message-text">
-                <template v-if="msg.messageType === 'text'">
-                  {{ msg.content }}
-                </template>
-                <template v-else-if="msg.messageType === 'image'">
-                  <el-image :src="msg.content" style="max-width:200px;" fit="contain"/>
-                </template>
-                <template v-else-if="msg.messageType === 'file'">
-                  <a :href="msg.content" target="_blank">下载文件</a>
-                </template>
-              </div>
-
-            </div>
+          <div class="header-left">
+            <span v-if="currentCustomer">
+              {{ currentCustomer.name }} 的对话
+              <el-tag size="small" :type="connectionStatusType">
+                {{ connectionStatusText }}
+              </el-tag>
+            </span>
+            <span v-else>请选择客户</span>
+          </div>
+          <!-- 新增：消息队列状态展示 -->
+          <div class="header-right" v-if="currentCustomer">
+            <el-tooltip placement="bottom">
+              <template #content>
+                <div>待发送: {{ queueStats.pending }}</div>
+                <div>发送中: {{ queueStats.sending }}</div>
+                <div>已发送: {{ queueStats.sent }}</div>
+                <div>失败: {{ queueStats.failed }}</div>
+              </template>
+              <el-badge :value="queueStats.pending + queueStats.failed" :max="99" v-if="queueStats.pending + queueStats.failed > 0">
+                <el-button size="small" :type="queueStats.failed > 0 ? 'danger' : 'warning'">
+                  消息队列
+                </el-button>
+              </el-badge>
+            </el-tooltip>
           </div>
         </div>
+      </el-header>
+
+      <el-main>
+        <div ref="messagesContainer" class="messages-container" @scroll="handleScroll">
+          <message-display
+              v-for="message in messages"
+              :key="message.id"
+              :content="message.content"
+              :from-customer="message.fromCustomer"
+              :message-type="message.messageType"
+              :sender="message.fromCustomer ? currentCustomer?.name : '客服'"
+              :timestamp="message.timestamp"
+              :status="message.status"
+              @retry="handleMessageRetry(message)"
+          />
+        </div>
       </el-main>
-      <el-footer style="height:60px; border-top:1px solid #ebebeb; display:flex; align-items:center; padding:0 10px;">
-        <el-input
-          v-model="newMessage"
-          placeholder="输入消息..."
-          clearable
-          @keyup.enter="sendMessage"
-          style="flex:1; margin-right:10px;"
-        />
-        <el-button type="primary" @click="sendMessage">发送</el-button>
-        <el-upload
-            class="upload-demo"
-            action="http://localhost:8080/api/upload"
-            :headers="headers"
-            :on-success="handleUploadSuccess"
-            :on-error="handleUploadError"
-            :http-request="customRequest"
-            :show-file-list="false"
-        >
-          <el-button type="primary">选择文件</el-button>
-        </el-upload>
 
-
+      <el-footer>
+        <div class="message-input-container">
+          <el-input
+              v-model="newMessage"
+              placeholder="输入消息..."
+              :disabled="!isInputEnabled"
+              @keyup.enter="sendMessage"
+              type="textarea"
+              :rows="3"
+              :maxlength="1000"
+              show-word-limit
+          >
+            <template #append>
+              <el-button-group>
+                <el-button
+                    type="primary"
+                    :disabled="!isInputEnabled"
+                    @click="sendMessage"
+                >
+                  发送
+                </el-button>
+                <el-upload
+                    class="upload-button"
+                    :action="uploadUrl"
+                    :headers="headers"
+                    :before-upload="handleBeforeUpload"
+                    :on-success="handleUploadSuccess"
+                    :on-error="handleUploadError"
+                    :disabled="!isInputEnabled"
+                    :show-file-list="false"
+                >
+                  <el-button :disabled="!isInputEnabled">
+                    <el-icon><Upload /></el-icon>
+                  </el-button>
+                </el-upload>
+              </el-button-group>
+            </template>
+          </el-input>
+        </div>
       </el-footer>
     </el-container>
 
-    <!-- 右侧客户信息 -->
     <el-aside width="200px" style="border-left: 1px solid #ebebeb;">
       <div class="customer-info" style="padding:10px;">
         <h3>客户信息</h3>
         <div v-if="currentCustomer">
           <p><strong>姓名：</strong>{{ currentCustomer.name }}</p>
           <p><strong>ID：</strong>{{ currentCustomer.id }}</p>
-          <!-- 其他可扩展的客户信息 -->
+          <p><strong>状态：</strong>{{ connectionStatusText }}</p>
         </div>
         <div v-else>
           <p>暂无客户信息</p>
@@ -98,238 +133,331 @@
   </el-container>
 </template>
 
-<script lang="ts" setup>
-import {ref, computed, onMounted, onUnmounted} from 'vue'
-import { ElMessage } from 'element-plus'
-import { Client } from '@stomp/stompjs';
-import SockJS from 'sockjs-client';
-import axios from 'axios';
+<script setup lang="ts">
+import MessageDisplay from '../components/MessageDisplay.vue'
+import {WebSocketManager} from '../../utils/WebSocketConnectionManager'
+import {ErrorHandlerService} from '../../services/errorHandler'
+import {ErrorCodes} from '../../utils/errorCodes'
+import {computed, onMounted, onUnmounted, ref, watch ,nextTick} from 'vue';
+import type {Message} from '../../types/message';
+import {Upload} from '@element-plus/icons-vue';
 
-// 模拟客户列表
+
+// 初始化服务
+const errorHandler = ErrorHandlerService.getInstance()
+const wsManager = new WebSocketManager('http://localhost:8080/ws')
+
+// 状态管理
 const customers = ref([
   { id: 'c001', name: '张三' },
   { id: 'c002', name: '李四' },
   { id: 'c003', name: '王五' },
 ])
 
-// 当前选中的客户ID
+// 状态和引用
+const messages = ref<Message[]>([]);
+const newMessage = ref('');
+const messagesContainer = ref<HTMLElement | null>(null);
+const autoScroll = ref(true);
 const selectedCustomerId = ref<string>('')
-
-// 搜索关键字
 const searchKeyword = ref('')
+const unreadMessages = ref<Set<string>>(new Set())
 
-// 根据搜索关键字过滤客户列表
+// 计算属性
+const queueStats = computed(() => wsManager.queueStats.value);
+const isInputEnabled = computed(() =>
+    currentCustomer.value && wsManager.isConnected.value
+);
+
+
+// 计算属性
 const filteredCustomers = computed(() => {
-  if (!searchKeyword.value.trim()) return customers.value
-  return customers.value.filter(c => c.name.includes(searchKeyword.value))
+  const keyword = searchKeyword.value.trim().toLowerCase()
+  if (!keyword) return customers.value
+  return customers.value.filter(c =>
+      c.name.toLowerCase().includes(keyword) ||
+      c.id.toLowerCase().includes(keyword)
+  )
 })
 
-// 当前选中的客户信息
 const currentCustomer = computed(() => {
   return customers.value.find(c => c.id === selectedCustomerId.value) || null
 })
 
+const connectionStatusType = computed(() => {
+  if (wsManager.isConnected.value) return 'success'
+  if (wsManager.isConnecting.value) return 'warning'
+  return 'danger'
+})
 
-// 新消息输入框
-const newMessage = ref('')
+const connectionStatusText = computed(() => {
+  if (wsManager.isConnected.value) return '在线'
+  if (wsManager.isConnecting.value) return '连接中'
+  return '离线'
+})
 
-
-
-const baseURL = 'http://localhost:8080';
-// 选择客户
+// 消息处理相关方法
 async function handleSelectCustomer(customerId: string) {
   try {
-    selectedCustomerId.value = customerId;
-    const { data } = await axios.get(`${baseURL}/api/messages`, {
-      params: { userId: customerId },
+    selectedCustomerId.value = customerId
+    await loadCustomerMessages(customerId)
+    subscribeToCustomerMessages(customerId)
+    unreadMessages.value.delete(customerId)
+  } catch (error) {
+    errorHandler.handleError({
+      code: ErrorCodes.USER_INVALID,
+      message: '加载客户消息失败',
+      level: 'error',
+      timestamp: Date.now(),
+      details: error
+    })
+  }
+}
+
+async function loadCustomerMessages(customerId: string) {
+  try {
+    const response = await fetch(`http://localhost:8080/api/messages?userId=${customerId}`, {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       }
-    });
+    })
 
-    // 添加错误处理
-    if (!Array.isArray(data)) {
-      console.error('返回的data有问题', data);
-      ElMessage.error('获取历史消息失败');
-      return;
-    }
+    if (!response.ok) throw new Error('Failed to fetch messages')
 
-    messages.value = data.map((msg: any) => {
-      return {
-        content: msg.content,
-        fromCustomer: msg.role === 'user',
-        messageType: msg.massageType || 'text'
-      }
-    });
+    const data = await response.json()
+    messages.value = data.map(transformMessage)
 
-
-    // 在获取历史消息成功后订阅对应的topic
-    if (stompClient && stompClient.connected) {
-      stompClient.subscribe(`/topic/kefu/${customerId}`, (message) => {
-        const payload = JSON.parse(message.body);
-        console.log('收到消息', payload);
-        messages.value.push({
-          content: payload.content,
-          fromCustomer: payload.role === 'user',
-          messageType: payload.messageType || 'text'
-        });
-      });
-    }
-
-
-
+    await nextTick()
+    scrollToBottom()
   } catch (error) {
-    console.error('请求错误:', error);
-    ElMessage.error('获取历史消息失败');
+    throw error
   }
 }
 
-// 发送消息
-function sendMessage() {
-  if (!newMessage.value.trim()) return
-  if (!currentCustomer.value) {
-    ElMessage.warning('请先选择客户！')
-    return
+function transformMessage(msg: any) {
+  console.log('消息:', msg)
+  return {
+    content: msg.content,
+    fromCustomer: msg.role === 'user',
+    messageType: msg.messageType || 'text',
+    timestamp: msg.timestamp
   }
+}
 
-  // 将消息加入本地列表，模拟客服发送消息
-  messages.value.push({
-    content: newMessage.value,
-    fromCustomer: false,
+function subscribeToCustomerMessages(customerId: string) {
+  wsManager.subscribe(`/topic/kefu/${customerId}`, (message) => {
+    try {
+      const payload = JSON.parse(message.body)
+      messages.value.push(transformMessage(payload))
+
+      if (payload.fromCustomer && selectedCustomerId.value !== customerId) {
+        unreadMessages.value.add(customerId)
+      }
+
+      if (autoScroll.value) {
+        nextTick(() => scrollToBottom())
+      }
+    } catch (error) {
+      errorHandler.handleError({
+        code: ErrorCodes.MESSAGE_TYPE_INVALID,
+        message: '消息格式错误',
+        level: 'error',
+        timestamp: Date.now(),
+        details: error
+      })
+    }
   })
-
-  // 调用已有的发送消息方法
-  sendMessageToServer(newMessage.value, currentCustomer.value.id)
-  
-  newMessage.value = ''
-}
-const messages = ref([]); // 用于存储收到的消息
-
-let stompClient: Client | null = null;
-
-
-onMounted(() => {
-  console.log('onMounted is triggered')
-
-  // 创建SockJS连接
-  const socket = new SockJS('http://localhost:8080/ws');
-  // 注意这里使用http开头，SockJS内部会自动升级或者采用合适的协议
-
-  // 创建STOMP客户端
-  stompClient = new Client({
-    webSocketFactory: () => socket,
-    onConnect: (frame) => {
-      // 订阅服务端广播的消息
-      // stompClient?.subscribe('/topic/chat', (message) => {
-      //   const payload = JSON.parse(message.body);
-      //   messages.value.push({
-      //     content: payload.content,
-      //     fromCustomer: payload.from === 'customer'
-      //   });
-      // });
-
-      console.log('STOMP connected: ', frame);
-
-    },
-    onStompError: (frame) => {
-      console.error('STOMP Broker error: ', frame.headers['message']);
-      console.error('Details: ', frame.body);
-    }
-  });
-
-  // 激活STOMP客户端
-  stompClient.activate();
-
-
-});
-
-// 发送消息函数
-function sendMessageToServer(content: string, userId: string) {
-  if (stompClient && stompClient.connected) {
-    //todo: 这里的fromUser和toUser需要根据实际情况修改
-    const message =
-        { fromUser: 'kefu1',  // 改为 fromUser
-          toUser: userId,     // 改为 toUser
-          role: 'kefu',
-          content: content,
-          timestamp: Date.now()  };
-    stompClient.publish({ destination: '/app/kefuSend', body: JSON.stringify(message) });
-  } else {
-    console.warn('Not connected, cannot send message');
-  }
 }
 
+// 消息发送处理
+async function sendMessage() {
+  if (!validateMessage()) return;
 
+  const messageData = {
+    id: crypto.randomUUID(),
+    fromUser: 'kefu1',
+    toUser: currentCustomer.value!.id,
+    role: 'kefu',
+    content: newMessage.value,
+    timestamp: Date.now(),
+    messageType: 'text',
+    status: 'pending'
+  };
 
-
-
-// 如果需要鉴权，这里可以在 headers 中加入token
-const headers = {
-  'Accept': 'application/json'
-};
-
-// 自定义上传请求，以便使用axios，而不是el-upload默认的XMLHttpRequest
-async function customRequest(req: any) {
-  const formData = new FormData();
-  formData.append('file', req.file);
-
+  console.log('发送消息:', messageData);
   try {
-    const { data } = await axios.post('http://localhost:8080/api/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+    // 发送消息并获取消息ID
+    const messageId = wsManager.send('/app/kefuSend', messageData);
+
+    // 添加到本地消息列表
+    messages.value.push({
+      ...messageData,
+      id: messageId,
     });
-    if (data.error) {
-      req.onError(data.error);
-    } else {
-      req.onSuccess(data);
-    }
+
+    newMessage.value = '';
+    autoScroll.value = true;
+
+    // 监听消息状态变化
+    watchMessageStatus(messageId);
   } catch (error) {
-    req.onError(error);
+    errorHandler.handleError({
+      code: ErrorCodes.MESSAGE_SEND_FAILED,
+      message: '消息发送失败',
+      level: 'error',
+      timestamp: Date.now(),
+      details: error
+    });
   }
 }
 
-function handleUploadSuccess(response: any, file: any, fileList: any) {
+
+// 监听消息状态
+function watchMessageStatus(messageId: string) {
+  const checkStatus = () => {
+    const status = wsManager.getMessageStatus(messageId);
+    if (status) {
+      const index = messages.value.findIndex(m => m.id === messageId);
+      if (index !== -1) {
+        messages.value[index].status = status.status;
+      }
+
+      if (status.status === 'sent' || status.status === 'failed') {
+        return;
+      }
+      setTimeout(checkStatus, 1000);
+    }
+  };
+
+  checkStatus();
+}
+
+
+// 消息重试处理
+function handleMessageRetry(message: Message) {
+  if (message.status === 'failed') {
+    const messageId = wsManager.send('/app/kefuSend', {
+      ...message,
+      timestamp: Date.now(),
+      status: 'pending'
+    });
+
+    // 更新消息ID和状态
+    const index = messages.value.findIndex(m => m.id === message.id);
+    if (index !== -1) {
+      messages.value[index].id = messageId;
+      messages.value[index].status = 'pending';
+      watchMessageStatus(messageId);
+    }
+  }
+}
+
+
+// 文件上传处理
+const uploadUrl = 'http://localhost:8080/api/upload'
+const headers = { 'Accept': 'application/json' }
+
+function handleBeforeUpload(file: File) {
+  const isLt5M = file.size / 1024 / 1024 < 5
+
+  if (!isLt5M) {
+    errorHandler.handleError({
+      code: ErrorCodes.UPLOAD_SIZE_EXCEED,
+      message: '文件大小不能超过 5MB',
+      level: 'warning',
+      timestamp: Date.now()
+    })
+    return false
+  }
+
+  return true
+}
+
+function handleUploadSuccess(response: any, file: File) {
 
   console.log('上传响应:', response);
-  // 上传成功后response返回 {url: 'xxx'} 其中xxx为文件访问URL
-  const fileUrl = response.url;
-  if (fileUrl) {
-    // 判定文件类型是图片还是其他文件，这里简单用mime type推断
-    const isImage = file.raw && file.raw.type && file.raw.type.startsWith('image/');
-    const messageType = isImage ? 'image' : 'file';
+  console.log('文件对象:', file);
+  const fileUrl = response.url
+  if (!fileUrl || !currentCustomer.value) return
 
-    console.log('类型是：', messageType);
-    // 调用已有的发送消息函数，将fileUrl通过WebSocket发送出去
-    sendMessageToServerWithType(fileUrl, messageType);
+  const isImage = file.raw?.type?.startsWith('image/');
+  const messageData = {
+    fromUser: 'kefu1',
+    toUser: currentCustomer.value.id,
+    role: 'kefu',
+    content: fileUrl,
+    timestamp: Date.now(),
+    messageType: isImage ? 'image' : 'file'
   }
+
+  wsManager.send('/app/kefuSend', messageData)
 }
 
-function handleUploadError(err: any, file: any, fileList: any) {
-  console.error('上传失败', err);
+function handleUploadError(error: any) {
+  errorHandler.handleError({
+    code: ErrorCodes.UPLOAD_SERVER_ERROR,
+    message: '文件上传失败',
+    level: 'error',
+    timestamp: Date.now(),
+    details: error
+  })
 }
 
-// 通过WebSocket发送消息，增加消息类型
-function sendMessageToServerWithType(content: string, messageType: string) {
-  if (stompClient && stompClient.connected && currentCustomer.value) {
-    const message = {
-      fromUser: 'kefu1',
-      toUser: currentCustomer.value.id,
-      role: 'kefu',
-      content: content,
-      timestamp: Date.now(),
-      messageType: messageType
-    };
-    console.log('发送的message是' , message);
-    stompClient.publish({ destination: '/app/kefuSend', body: JSON.stringify(message) });
-  } else {
-    console.warn('Not connected or no customer selected');
+// 辅助方法
+function validateMessage() {
+  if (!newMessage.value.trim()) {
+    errorHandler.handleError({
+      code: ErrorCodes.MESSAGE_EMPTY,
+      message: '消息不能为空',
+      level: 'warning',
+      timestamp: Date.now()
+    })
+    return false
   }
+
+  if (!currentCustomer.value) {
+    errorHandler.handleError({
+      code: ErrorCodes.USER_NOT_SELECTED,
+      message: '请先选择客户',
+      level: 'warning',
+      timestamp: Date.now()
+    })
+    return false
+  }
+
+  return true
 }
 
+function scrollToBottom() {
+  if (!messagesContainer.value) return
+  messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+}
 
+function handleScroll(event: Event) {
+  const target = event.target as HTMLElement
+  autoScroll.value = target.scrollHeight - target.scrollTop <= target.clientHeight + 100
+}
 
+function hasUnreadMessage(customerId: string): boolean {
+  return unreadMessages.value.has(customerId)
+}
+
+// 生命周期钩子
+onMounted(() => {
+  wsManager.connect();
+});
+
+onUnmounted(() => {
+  wsManager.disconnect();
+});
+
+// 监听连接状态变化
+watch(() => wsManager.isConnected.value, (newValue) => {
+  if (newValue && selectedCustomerId.value) {
+    subscribeToCustomerMessages(selectedCustomerId.value)
+  }
+})
 </script>
 
 <style scoped>
@@ -338,26 +466,57 @@ function sendMessageToServerWithType(content: string, messageType: string) {
   width: 80vw;
 }
 
-
 .customer-list {
   height: 100%;
   display: flex;
   flex-direction: column;
 }
+
 .messages-container {
   background: #f5f5f5;
+  scroll-behavior: smooth;
 }
-.message-item {
-  margin: 5px 0;
-  padding: 5px;
-  border-radius: 4px;
-  max-width: 60%;
-  background: #ffffff;
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
-.message-item.from-customer {
-  background: #e6f7ff;
+
+.message-input-container {
+  display: flex;
+  padding: 10px;
 }
-.message-sender {
-  font-weight: bold;
+
+.messages-container {
+  height: 100%;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.upload-button {
+  display: inline-block;
+}
+
+/* 添加消息状态样式 */
+.message-status {
+  font-size: 12px;
+  margin-left: 8px;
+}
+
+.status-pending {
+  color: #909399;
+}
+
+.status-sending {
+  color: #409eff;
+}
+
+.status-sent {
+  color: #67c23a;
+}
+
+.status-failed {
+  color: #f56c6c;
 }
 </style>

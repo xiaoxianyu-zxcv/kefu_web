@@ -1,4 +1,3 @@
-// websocketManager.ts
 
 export class WebSocketManager {
     private ws: WebSocket | null = null;          // WebSocket实例
