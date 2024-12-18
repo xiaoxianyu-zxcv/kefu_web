@@ -1,7 +1,6 @@
-import { ref, computed } from 'vue'
-import { ErrorHandlerService } from '../services/errorHandler'
-import { ErrorCodes } from './errorCodes'
-import type { ErrorMessage } from '../types/error'
+import { ref, computed } from 'vue';
+import { ErrorHandlerService } from '../services/errorHandler';
+import { ErrorCodes } from './errorCodes';
 
 export interface QueuedMessage {
     id: string;
@@ -14,35 +13,33 @@ export interface QueuedMessage {
 }
 
 export class MessageQueueManager {
-    private static instance: MessageQueueManager
-    private messageQueue: Map<string, QueuedMessage> = new Map()
-    private readonly maxRetries = 3
-    private readonly retryDelays = [1000, 5000, 15000] // 递增的重试延迟
-    private readonly errorHandler: ErrorHandlerService
+    private static instance: MessageQueueManager;
+    private messageQueue: Map<string, QueuedMessage> = new Map();
+    private readonly maxRetries = 3;
+    private readonly retryDelays = [1000, 5000, 15000];
+    private readonly errorHandler: ErrorHandlerService;
 
-    // 消息状态统计
     private _stats = ref({
         pending: 0,
         sending: 0,
         sent: 0,
         failed: 0
-    })
+    });
 
     private constructor() {
-        this.errorHandler = ErrorHandlerService.getInstance()
-        this.initializePeriodicCleanup()
+        this.errorHandler = ErrorHandlerService.getInstance();
+        this.initializePeriodicCleanup();
     }
 
     public static getInstance(): MessageQueueManager {
         if (!MessageQueueManager.instance) {
-            MessageQueueManager.instance = new MessageQueueManager()
+            MessageQueueManager.instance = new MessageQueueManager();
         }
-        return MessageQueueManager.instance
+        return MessageQueueManager.instance;
     }
 
-    // 添加消息到队列
     public enqueue(destination: string, body: any): string {
-        const id = this.generateMessageId()
+        const id = this.generateMessageId();
         const message: QueuedMessage = {
             id,
             destination,
@@ -50,119 +47,153 @@ export class MessageQueueManager {
             status: 'pending',
             timestamp: Date.now(),
             retryCount: 0
-        }
+        };
 
-        this.messageQueue.set(id, message)
-        this.updateStats()
-        return id
+        this.messageQueue.set(id, message);
+        this.updateStats();
+        return id;
     }
 
-    // 处理消息发送
-    public async processMessage(messageId: string, sendFunction: (destination: string, body: any) => Promise<void>): Promise<void> {
-        const message = this.messageQueue.get(messageId)
-        if (!message) return
+    public async processMessage(
+        messageId: string,
+        sendFunction: (destination: string, body: any) => Promise<void>
+    ): Promise<void> {
+        const message = this.messageQueue.get(messageId);
+        if (!message || message.status !== 'pending') return;
 
         try {
-            message.status = 'sending'
-            this.updateStats()
+            message.status = 'sending';
+            this.updateStats();
 
-            await sendFunction(message.destination, message.body)
+            await sendFunction(message.destination, message.body);
 
-            message.status = 'sent'
-            this.updateStats()
+            message.status = 'sent';
+            this.updateStats();
 
-            // 发送成功后延迟删除消息
-            setTimeout(() => {
-                this.messageQueue.delete(messageId)
-                this.updateStats()
-            }, 60000) // 保留1分钟用于状态查询
+            // 成功发送后延迟删除消息
+            this.scheduleMessageDeletion(messageId);
 
         } catch (error) {
-            await this.handleMessageError(message, error)
+            await this.handleMessageError(message, error);
         }
     }
 
-    // 处理消息发送错误
     private async handleMessageError(message: QueuedMessage, error: any): Promise<void> {
-        message.status = 'failed'
-        message.retryCount++
-        message.lastRetryTime = Date.now()
+        message.status = 'failed';
+        message.retryCount++;
+        message.lastRetryTime = Date.now();
 
-        if (message.retryCount < this.maxRetries) {
-            const delay = this.retryDelays[message.retryCount - 1] || this.retryDelays[this.retryDelays.length - 1]
+        const shouldRetry = message.retryCount < this.maxRetries;
+        const delay = shouldRetry ? this.retryDelays[message.retryCount - 1] : 0;
 
-            this.errorHandler.handleError({
-                code: ErrorCodes.MESSAGE_SEND_FAILED,
-                message: `消息发送失败，${delay/1000}秒后重试(${message.retryCount}/${this.maxRetries})`,
-                level: 'warning',
-                timestamp: Date.now(),
-                details: error
-            })
+        this.errorHandler.handleError({
+            code: ErrorCodes.MESSAGE_SEND_FAILED,
+            message: shouldRetry
+                ? `消息发送失败，${delay/1000}秒后重试(${message.retryCount}/${this.maxRetries})`
+                : '消息发送失败，已达到最大重试次数',
+            level: shouldRetry ? 'warning' : 'error',
+            timestamp: Date.now(),
+            details: error
+        });
 
+        if (shouldRetry) {
             setTimeout(() => {
-                message.status = 'pending'
-                this.updateStats()
-            }, delay)
-
-        } else {
-            this.errorHandler.handleError({
-                code: ErrorCodes.MESSAGE_SEND_FAILED,
-                message: '消息发送失败，已达到最大重试次数',
-                level: 'error',
-                timestamp: Date.now(),
-                details: error
-            })
+                message.status = 'pending';
+                this.updateStats();
+            }, delay);
         }
 
-        this.updateStats()
+        this.updateStats();
     }
 
-    // 获取消息状态
+    private scheduleMessageDeletion(messageId: string): void {
+        setTimeout(() => {
+            this.messageQueue.delete(messageId);
+            this.updateStats();
+        }, 60000);
+    }
+
     public getMessageStatus(messageId: string): QueuedMessage | undefined {
-        return this.messageQueue.get(messageId)
+        return this.messageQueue.get(messageId);
     }
 
-    // 更新状态统计
     private updateStats(): void {
         const stats = {
             pending: 0,
             sending: 0,
             sent: 0,
             failed: 0
-        }
+        };
 
         for (const message of this.messageQueue.values()) {
-            stats[message.status]++
+            stats[message.status]++;
         }
 
-        this._stats.value = stats
+        this._stats.value = stats;
     }
 
-    // 定期清理过期消息
     private initializePeriodicCleanup(): void {
         setInterval(() => {
-            const now = Date.now()
+            const now = Date.now();
+            let hasChanges = false;
+
             for (const [id, message] of this.messageQueue) {
-                if (message.status === 'sent' && now - message.timestamp > 60000) {
-                    this.messageQueue.delete(id)
-                } else if (message.status === 'failed' && message.retryCount >= this.maxRetries) {
-                    this.messageQueue.delete(id)
+                if (this.shouldDeleteMessage(message, now)) {
+                    this.messageQueue.delete(id);
+                    hasChanges = true;
                 }
             }
-            this.updateStats()
-        }, 300000) // 每5分钟清理一次
+
+            if (hasChanges) {
+                this.updateStats();
+            }
+        }, 300000); // 每5分钟清理一次
     }
 
-    // 生成唯一消息ID
+    private shouldDeleteMessage(message: QueuedMessage, now: number): boolean {
+        return (
+            (message.status === 'sent' && now - message.timestamp > 60000) ||
+            (message.status === 'failed' && message.retryCount >= this.maxRetries)
+        );
+    }
+
     private generateMessageId(): string {
-        return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+        return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
-    // 获取队列统计信息
     public get stats() {
-        return computed(() => this._stats.value)
+        return computed(() => this._stats.value);
     }
-    public getMessages(): Map<string, QueuedMessage> {
-        return this.messageQueue;
+
+    public resetFailedMessages(): void {
+        let hasChanges = false;
+
+        this.messageQueue.forEach(message => {
+            if (message.status === 'failed') {
+                message.status = 'pending';
+                message.retryCount = 0;
+                hasChanges = true;
+            }
+        });
+
+        if (hasChanges) {
+            this.updateStats();
+        }
+    }
+
+    public markMessageReceived(messageId: string): void {
+        const message = this.messageQueue.get(messageId);
+        if (message && message.status !== 'sent') {
+            message.status = 'sent';
+            this.updateStats();
+            this.scheduleMessageDeletion(messageId);
+        }
+    }
+
+
+    public getPendingMessages(): string[] {
+        return Array.from(this.messageQueue.entries())
+            .filter(([_, message]) => message.status === 'pending')
+            .map(([id]) => id);
     }
 }

@@ -275,7 +275,7 @@ async function sendMessage() {
   if (!validateMessage()) return;
 
   const messageData = {
-    id: crypto.randomUUID(),
+    // id: crypto.randomUUID(),
     fromUser: 'kefu1',
     toUser: currentCustomer.value!.id,
     role: 'kefu',
@@ -290,6 +290,7 @@ async function sendMessage() {
     // 发送消息并获取消息ID
     const messageId = wsManager.send('/app/kefuSend', messageData);
 
+    console.log('消息ID:', messageId);
     // 添加到本地消息列表
     messages.value.push({
       ...messageData,

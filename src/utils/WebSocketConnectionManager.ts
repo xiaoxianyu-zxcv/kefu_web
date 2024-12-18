@@ -1,254 +1,207 @@
-import { Client } from '@stomp/stompjs';
+import { Client, IFrame, StompSubscription } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { ref } from 'vue';
 import { ErrorHandlerService } from '../services/errorHandler';
 import { MessageQueueManager } from './MessageQueueManager';
 import { ErrorCodes } from './errorCodes';
-import type { ErrorMessage } from '../types/error';
 
 export class WebSocketManager {
     private client: Client | null = null;
-    private reconnectAttempts = 0;
-    private readonly maxReconnectAttempts = 5;
-    private readonly initialDelay = 1000;
-    private readonly maxDelay = 30000;
-    private timerId: number | null = null;
     private errorHandler: ErrorHandlerService;
     private messageQueue: MessageQueueManager;
-    private processingQueue = false;
-
     private _isConnected = ref(false);
     private _isConnecting = ref(false);
-    private subscriptions: Map<string, () => void> = new Map();
-
-
-    private isManualDisconnect = false;
+    private subscriptions: Map<string, StompSubscription> = new Map();
+    private messageHandlers: Map<string, (message: IFrame) => void> = new Map();
 
     constructor(private readonly serverUrl: string) {
         this.errorHandler = ErrorHandlerService.getInstance();
         this.messageQueue = MessageQueueManager.getInstance();
+
+        // 输出初始配置信息
+        console.info('[WebSocket] 初始化配置:', {
+            serverUrl,
+            reconnectDelay: 5000,
+            heartbeatIncoming: 4000,
+            heartbeatOutgoing: 4000
+        });
     }
 
-    public get isConnected() {
-        return this._isConnected;
-    }
-
-    public get isConnecting() {
-        return this._isConnecting;
-    }
+    // 状态获取器
+    public get isConnected() { return this._isConnected; }
+    public get isConnecting() { return this._isConnecting; }
+    public get queueStats() { return this.messageQueue.stats; }
 
     public async connect(): Promise<void> {
-        this.isManualDisconnect = false;
-
-        if (this._isConnecting.value || this._isConnected.value) {
-            return;
-        }
-
-        this._isConnecting.value = true;
+        if (this._isConnected.value || this._isConnecting.value) return;
 
         try {
-            const socket = new SockJS(this.serverUrl);
-            this.client = new Client({
-                webSocketFactory: () => socket,
-                onConnect: this.handleConnect.bind(this),
-                onStompError: this.handleError.bind(this),
-                onDisconnect: this.handleDisconnect.bind(this),
+            this._isConnecting.value = true;
 
+            this.client = new Client({
+                webSocketFactory: () => new SockJS(this.serverUrl),
+
+                // 连接相关配置
+                connectHeaders: {},
+                disconnectHeaders: {},
                 reconnectDelay: 5000,
                 heartbeatIncoming: 4000,
                 heartbeatOutgoing: 4000,
-                debug: function(str) {
-                    console.log('STOMP: ' + str);
-                }
 
+                // 事件处理器
+                onConnect: this.handleConnect.bind(this),
+                onDisconnect: this.handleDisconnect.bind(this),
+                onStompError: this.handleStompError.bind(this),
+                onWebSocketError: this.handleWebSocketError.bind(this),
+                onWebSocketClose: this.handleWebSocketClose.bind(this),
+
+                // 调试模式
+                debug: (str) => console.debug('[STOMP Debug]', str)
             });
 
             await this.client.activate();
+
         } catch (error) {
-            const errorMessage: ErrorMessage = {
-                code: ErrorCodes.WS_CONNECTION_ERROR,
-                message: '连接服务器失败，正在尝试重新连接',
-                level: 'error',
-                timestamp: Date.now(),
-                details: error
-            };
-
-            this.errorHandler.handleError(errorMessage, {
-                showNotification: true,
-                retry: true,
-                retryCount: this.maxReconnectAttempts,
-                onRetry: () => this.connect()
-            });
+            this.handleConnectionError(error);
         }
     }
 
-    private handleDisconnect = (): void => {
-        this._isConnected.value = false;
-        this._isConnecting.value = false;
+    private handleConnect(frame: IFrame): void {
+        console.info('[WebSocket] 连接成功建立');
 
-        // 只有在非主动断开的情况下才进行重连
-        if (!this.isManualDisconnect) {
-            this.errorHandler.handleError({
-                code: ErrorCodes.WS_CONNECTION_CLOSED,
-                message: '连接已断开，正在尝试重新连接',
-                level: 'warning',
-                timestamp: Date.now()
-            }, {
-                showNotification: true,
-                retry: true,
-                retryCount: this.maxReconnectAttempts,
-                onRetry: () => this.scheduleReconnect()
-            });
-        }
-    }
-
-    private handleConnect(): void {
-        console.log('[WebSocket] 连接成功');
         this._isConnected.value = true;
         this._isConnecting.value = false;
-        this.reconnectAttempts = 0;
 
-        // 重新订阅之前的主题
-        this.resubscribe();
+        // 重新建立所有订阅
+        this.reestablishSubscriptions();
 
-        // 开始处理消息队列
-        this.processMessageQueue();
+        // 重置失败的消息
+        this.messageQueue.resetFailedMessages();
+
+        // 处理可能在断线期间积累的待发送消息
+        this.processPendingMessages();
     }
 
-    private async processMessageQueue(): Promise<void> {
-        if (this.processingQueue || !this._isConnected.value) return;
-
-        this.processingQueue = true;
-
-        try {
-            // 遍历消息队列中的所有消息
-            for (const [messageId, message] of this.messageQueue.getMessages()) {
-                if (message.status === 'pending') {
-                    await this.messageQueue.processMessage(messageId, async (destination, body) => {
-                        if (!this.client?.connected) {
-                            throw new Error('WebSocket未连接');
-                        }
-
-                        await this.sendMessageToServer(destination, body, messageId);
-                    });
-                }
-            }
-        } catch (error) {
-            console.error('处理消息队列时出错:', error);
-        } finally {
-            this.processingQueue = false;
-
-            // 如果队列中还有待处理的消息，继续处理
-            const pendingMessages = this.messageQueue.stats.value.pending;
-            if (pendingMessages > 0) {
-                setTimeout(() => this.processMessageQueue(), 100);
-            }
-        }
+    private handleDisconnect(frame: IFrame): void {
+        console.warn('[WebSocket] 连接断开');
+        this._isConnected.value = false;
+        this._isConnecting.value = false;
     }
 
-
-    private sendMessageToServer(destination: string, body: any, messageId: string): Promise<void> {
-        return new Promise((resolve, reject) => {
-            try {
-                this.client!.publish({
-                    destination,
-                    body: JSON.stringify(body),
-                    headers: { 'message-id': messageId }
-                });
-                resolve();
-            } catch (error) {
-                reject(error);
-            }
-        });
-    }
-
-    public send(destination: string, body: any): string {
-        // 将消息加入队列并获取消息ID
-        const messageId = this.messageQueue.enqueue(destination, body);
-
-        // 如果已连接，立即开始处理消息队列
-        if (this._isConnected.value && !this.processingQueue) {
-            this.processMessageQueue();
-        }
-
-        return messageId;
-    }
-
-    public subscribe(topic: string, callback: (message: any) => void): void {
-        if (!this.client?.connected) {
-            this.subscriptions.set(topic, () => this.subscribe(topic, callback));
-            return;
-        }
-
-        try {
-            const subscription = this.client.subscribe(topic, (message) => {
-                try {
-                    const messageId = message.headers['message-id'];
-                    if (messageId) {
-                        // 更新消息状态
-                        this.messageQueue.markMessageReceived(messageId);
-                    }
-                    callback(message);
-                } catch (error) {
-                    this.errorHandler.handleError({
-                        code: ErrorCodes.MESSAGE_TYPE_INVALID,
-                        message: '消息处理失败',
-                        level: 'error',
-                        timestamp: Date.now(),
-                        details: error
-                    });
-                }
-            });
-
-            this.subscriptions.set(topic, () => {
-                subscription.unsubscribe();
-                this.subscribe(topic, callback);
-            });
-        } catch (error) {
-            this.errorHandler.handleError({
-                code: ErrorCodes.WS_SEND_ERROR,
-                message: '订阅主题失败',
-                level: 'error',
-                timestamp: Date.now(),
-                details: error
-            });
-        }
-    }
-
-    private resubscribe(): void {
-        this.subscriptions.forEach((subscribe) => {
-            subscribe();
-        });
-    }
-
-    private handleError(frame: any): void {
+    private handleStompError(frame: IFrame): void {
+        console.error('[WebSocket] STOMP协议错误:', frame.body);
         this.errorHandler.handleError({
             code: ErrorCodes.WS_SEND_ERROR,
-            message: 'WebSocket连接错误',
+            message: `STOMP协议错误: ${frame.body}`,
             level: 'error',
             timestamp: Date.now(),
             details: frame
         });
     }
 
-    public disconnect(): void {
-        this.isManualDisconnect = true;
-        if (this.timerId) {
-            window.clearTimeout(this.timerId);
+    private handleWebSocketError(event: Event): void {
+        console.error('[WebSocket] WebSocket错误:', event);
+        this.errorHandler.handleError({
+            code: ErrorCodes.WS_CONNECTION_ERROR,
+            message: 'WebSocket连接错误',
+            level: 'error',
+            timestamp: Date.now(),
+            details: event
+        });
+    }
+
+    private handleWebSocketClose(event: CloseEvent): void {
+        console.warn('[WebSocket] WebSocket关闭:', event);
+        this._isConnected.value = false;
+    }
+
+    private handleConnectionError(error: any): void {
+        this._isConnecting.value = false;
+        this._isConnected.value = false;
+
+        this.errorHandler.handleError({
+            code: ErrorCodes.WS_CONNECTION_ERROR,
+            message: '建立WebSocket连接失败',
+            level: 'error',
+            timestamp: Date.now(),
+            details: error
+        });
+    }
+
+    public send(destination: string, body: any): string {
+        const messageId = this.messageQueue.enqueue(destination, body);
+
+        if (this._isConnected.value && this.client?.connected) {
+            this.sendQueuedMessage(messageId);
         }
-        this.client?.deactivate();
+
+        return messageId;
+    }
+
+    private async sendQueuedMessage(messageId: string): Promise<void> {
+        const message = this.messageQueue.getMessageStatus(messageId);
+        if (!message || message.status !== 'pending') return;
+
+        try {
+            await this.messageQueue.processMessage(messageId, async (destination, body) => {
+                if (!this.client?.connected) {
+                    throw new Error('WebSocket未连接');
+                }
+
+                this.client.publish({
+                    destination,
+                    body: JSON.stringify(body),
+                    headers: { 'message-id': messageId }
+                });
+            });
+        } catch (error) {
+            console.error('[WebSocket] 发送消息失败:', error);
+        }
+    }
+
+    private async processPendingMessages(): Promise<void> {
+        const messages = this.messageQueue.getPendingMessages();
+        for (const messageId of messages) {
+            await this.sendQueuedMessage(messageId);
+        }
+    }
+
+    public subscribe(topic: string, callback: (message: IFrame) => void): void {
+        this.messageHandlers.set(topic, callback);
+
+        if (this.client?.connected) {
+            this.createSubscription(topic, callback);
+        }
+    }
+
+    private createSubscription(topic: string, callback: (message: IFrame) => void): void {
+        const subscription = this.client!.subscribe(topic, (message) => {
+            const messageId = message.headers['message-id'];
+            if (messageId) {
+                this.messageQueue.markMessageReceived(messageId);
+            }
+            callback(message);
+        });
+
+        this.subscriptions.set(topic, subscription);
+    }
+
+    private reestablishSubscriptions(): void {
+        this.messageHandlers.forEach((callback, topic) => {
+            this.createSubscription(topic, callback);
+        });
+    }
+
+    public disconnect(): void {
+        this.subscriptions.forEach(subscription => subscription.unsubscribe());
         this.subscriptions.clear();
+        this.messageHandlers.clear();
+        this.client?.deactivate();
         this._isConnected.value = false;
         this._isConnecting.value = false;
     }
 
-    // 获取消息状态
     public getMessageStatus(messageId: string) {
         return this.messageQueue.getMessageStatus(messageId);
-    }
-
-    // 获取队列统计信息
-    public get queueStats() {
-        return this.messageQueue.stats;
     }
 }

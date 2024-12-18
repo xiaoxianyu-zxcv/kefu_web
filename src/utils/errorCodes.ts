@@ -1,4 +1,6 @@
 // src/utils/errorCodes.ts
+import {ErrorMessage} from "../types/error";
+
 export const ErrorCodes = {
     // WebSocket相关错误
     WS_CONNECTION_ERROR: 'WS001',
@@ -42,6 +44,28 @@ export const ErrorMessages = {
     [ErrorCodes.USER_OFFLINE]: '用户已离线',
     [ErrorCodes.USER_INVALID]: '无效的用户信息'
 } as const;
+
+// 新增错误处理策略接口
+interface ErrorStrategy {
+    handle(error: ErrorMessage): void;
+}
+
+// 网络错误处理策略
+class NetworkErrorStrategy implements ErrorStrategy {
+    handle(error: ErrorMessage) {
+        // 网络错误特定处理逻辑
+        // 例如：自动重试、检查网络状态等
+    }
+}
+
+// 业务错误处理策略
+class BusinessErrorStrategy implements ErrorStrategy {
+    handle(error: ErrorMessage) {
+        // 业务错误特定处理逻辑
+        // 例如：显示错误消息、记录日志等
+    }
+}
+
 
 export type ErrorCode = keyof typeof ErrorCodes;
 export type ErrorKey = keyof typeof ErrorMessages;
