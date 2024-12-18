@@ -25,6 +25,7 @@ export const ErrorCodes = {
     USER_INVALID: 'USR003'
 } as const;
 
+
 export const ErrorMessages = {
     [ErrorCodes.WS_CONNECTION_ERROR]: '连接服务器失败，请检查网络连接',
     [ErrorCodes.WS_SEND_ERROR]: '消息发送失败，请重试',

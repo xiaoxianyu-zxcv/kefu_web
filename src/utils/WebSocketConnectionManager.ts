@@ -18,8 +18,7 @@ export class WebSocketManager {
         this.errorHandler = ErrorHandlerService.getInstance();
         this.messageQueue = MessageQueueManager.getInstance();
 
-        // 输出初始配置信息
-        console.info('[WebSocket] 初始化配置:', {
+        console.info('[WebSocket] Initialized with configuration:', {
             serverUrl,
             reconnectDelay: 5000,
             heartbeatIncoming: 4000,
@@ -27,7 +26,6 @@ export class WebSocketManager {
         });
     }
 
-    // 状态获取器
     public get isConnected() { return this._isConnected; }
     public get isConnecting() { return this._isConnecting; }
     public get queueStats() { return this.messageQueue.stats; }
@@ -40,22 +38,18 @@ export class WebSocketManager {
 
             this.client = new Client({
                 webSocketFactory: () => new SockJS(this.serverUrl),
-
-                // 连接相关配置
                 connectHeaders: {},
                 disconnectHeaders: {},
                 reconnectDelay: 5000,
                 heartbeatIncoming: 4000,
                 heartbeatOutgoing: 4000,
 
-                // 事件处理器
                 onConnect: this.handleConnect.bind(this),
                 onDisconnect: this.handleDisconnect.bind(this),
                 onStompError: this.handleStompError.bind(this),
                 onWebSocketError: this.handleWebSocketError.bind(this),
                 onWebSocketClose: this.handleWebSocketClose.bind(this),
 
-                // 调试模式
                 debug: (str) => console.debug('[STOMP Debug]', str)
             });
 
@@ -67,32 +61,27 @@ export class WebSocketManager {
     }
 
     private handleConnect(frame: IFrame): void {
-        console.info('[WebSocket] 连接成功建立');
-
+        console.info('[WebSocket] Connection established');
         this._isConnected.value = true;
         this._isConnecting.value = false;
 
-        // 重新建立所有订阅
+        this.clearSubscriptions(); // 防止重复订阅
         this.reestablishSubscriptions();
-
-        // 重置失败的消息
         this.messageQueue.resetFailedMessages();
-
-        // 处理可能在断线期间积累的待发送消息
         this.processPendingMessages();
     }
 
     private handleDisconnect(frame: IFrame): void {
-        console.warn('[WebSocket] 连接断开');
+        console.warn('[WebSocket] Disconnected');
         this._isConnected.value = false;
         this._isConnecting.value = false;
     }
 
     private handleStompError(frame: IFrame): void {
-        console.error('[WebSocket] STOMP协议错误:', frame.body);
+        console.error('[WebSocket] STOMP Error:', frame.body);
         this.errorHandler.handleError({
-            code: ErrorCodes.WS_SEND_ERROR,
-            message: `STOMP协议错误: ${frame.body}`,
+            code: ErrorCodes.WS_SEND_ERROR as "WS_SEND_ERROR",
+            message: `STOMP Protocol Error: ${frame.body}`,
             level: 'error',
             timestamp: Date.now(),
             details: frame
@@ -100,10 +89,10 @@ export class WebSocketManager {
     }
 
     private handleWebSocketError(event: Event): void {
-        console.error('[WebSocket] WebSocket错误:', event);
+        console.error('[WebSocket] WebSocket Error:', event);
         this.errorHandler.handleError({
-            code: ErrorCodes.WS_CONNECTION_ERROR,
-            message: 'WebSocket连接错误',
+            code: ErrorCodes.WS_CONNECTION_ERROR  as "WS_CONNECTION_ERROR",
+            message: 'WebSocket connection error',
             level: 'error',
             timestamp: Date.now(),
             details: event
@@ -111,17 +100,17 @@ export class WebSocketManager {
     }
 
     private handleWebSocketClose(event: CloseEvent): void {
-        console.warn('[WebSocket] WebSocket关闭:', event);
+        console.warn('[WebSocket] WebSocket closed:', event);
         this._isConnected.value = false;
+        this.clearSubscriptions(); // 增强状态清理
     }
 
     private handleConnectionError(error: any): void {
         this._isConnecting.value = false;
         this._isConnected.value = false;
-
         this.errorHandler.handleError({
-            code: ErrorCodes.WS_CONNECTION_ERROR,
-            message: '建立WebSocket连接失败',
+            code: ErrorCodes.WS_CONNECTION_ERROR as "WS_CONNECTION_ERROR",
+            message: 'Failed to establish WebSocket connection',
             level: 'error',
             timestamp: Date.now(),
             details: error
@@ -145,7 +134,7 @@ export class WebSocketManager {
         try {
             await this.messageQueue.processMessage(messageId, async (destination, body) => {
                 if (!this.client?.connected) {
-                    throw new Error('WebSocket未连接');
+                    throw new Error('WebSocket not connected');
                 }
 
                 this.client.publish({
@@ -155,7 +144,7 @@ export class WebSocketManager {
                 });
             });
         } catch (error) {
-            console.error('[WebSocket] 发送消息失败:', error);
+            console.error('[WebSocket] Failed to send message:', error);
         }
     }
 
@@ -167,6 +156,8 @@ export class WebSocketManager {
     }
 
     public subscribe(topic: string, callback: (message: IFrame) => void): void {
+        if (this.messageHandlers.has(topic)) return; // 防止重复订阅
+
         this.messageHandlers.set(topic, callback);
 
         if (this.client?.connected) {
@@ -192,9 +183,13 @@ export class WebSocketManager {
         });
     }
 
-    public disconnect(): void {
+    private clearSubscriptions(): void {
         this.subscriptions.forEach(subscription => subscription.unsubscribe());
         this.subscriptions.clear();
+    }
+
+    public disconnect(): void {
+        this.clearSubscriptions();
         this.messageHandlers.clear();
         this.client?.deactivate();
         this._isConnected.value = false;

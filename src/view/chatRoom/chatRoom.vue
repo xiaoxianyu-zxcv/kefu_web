@@ -80,7 +80,6 @@
           <el-input
               v-model="newMessage"
               placeholder="输入消息..."
-              :disabled="!isInputEnabled"
               @keyup.enter="sendMessage"
               type="textarea"
               :rows="3"

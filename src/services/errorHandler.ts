@@ -16,7 +16,7 @@ export class ErrorHandlerService {
         // 私有构造函数，确保单例模式
         window.onerror = (message, source, lineno, colno, error) => {
             this.handleError({
-                code: ErrorCodes.WS_CONNECTION_ERROR,
+                code: ErrorCodes.WS_CONNECTION_ERROR as "WS_CONNECTION_ERROR",
                 message: String(message),
                 level: 'error',
                 timestamp: Date.now(),

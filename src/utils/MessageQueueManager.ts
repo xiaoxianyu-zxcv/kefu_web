@@ -87,10 +87,10 @@ export class MessageQueueManager {
         const delay = shouldRetry ? this.retryDelays[message.retryCount - 1] : 0;
 
         this.errorHandler.handleError({
-            code: ErrorCodes.MESSAGE_SEND_FAILED,
+            code: ErrorCodes.MESSAGE_SEND_FAILED as "MESSAGE_SEND_FAILED", // 类型断言
             message: shouldRetry
-                ? `消息发送失败，${delay/1000}秒后重试(${message.retryCount}/${this.maxRetries})`
-                : '消息发送失败，已达到最大重试次数',
+                ? `Message failed, retrying in ${delay / 1000}s (${message.retryCount}/${this.maxRetries})`
+                : 'Message failed, reached maximum retry attempts',
             level: shouldRetry ? 'warning' : 'error',
             timestamp: Date.now(),
             details: error
@@ -190,10 +190,55 @@ export class MessageQueueManager {
         }
     }
 
-
     public getPendingMessages(): string[] {
         return Array.from(this.messageQueue.entries())
             .filter(([_, message]) => message.status === 'pending')
             .map(([id]) => id);
+    }
+
+
+    // New sendMessage logic with queuing for offline mode
+    public async sendMessage(destination: string, body: any, isConnected: boolean, sendFunction: (destination: string, body: any) => Promise<void>): Promise<void> {
+        if (isConnected) {
+            try {
+                await sendFunction(destination, body);
+            } catch (error) {
+                console.error('[MessageQueue] Message failed to send, queuing it.');
+                this.enqueue(destination, body);
+            }
+        } else {
+            console.warn('[MessageQueue] WebSocket disconnected, queuing message.');
+            this.enqueue(destination, body);
+        }
+    }
+
+    // Optimization: Improved atomic updates for concurrency safety
+    private atomicUpdate(messageId: string, updateFunction: (message: QueuedMessage) => void): void {
+        const message = this.messageQueue.get(messageId);
+        if (message) {
+            updateFunction(message);
+            this.updateStats();
+        }
+    }
+
+    // Enhanced cleanup logic for better granularity
+    private enhancedCleanup(now: number): void {
+        for (const [id, message] of this.messageQueue) {
+            if (
+                (message.status === 'sent' && now - message.timestamp > 60000) ||
+                (message.status === 'failed' && message.retryCount >= this.maxRetries) ||
+                (message.status === 'pending' && now - message.timestamp > 300000) // Pending messages older than 5 minutes
+            ) {
+                this.messageQueue.delete(id);
+            }
+        }
+        this.updateStats();
+    }
+
+    public enhancedPeriodicCleanup(): void {
+        setInterval(() => {
+            const now = Date.now();
+            this.enhancedCleanup(now);
+        }, 300000); // Every 5 minutes
     }
 }
